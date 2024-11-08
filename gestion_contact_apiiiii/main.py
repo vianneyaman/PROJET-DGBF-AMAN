@@ -4,17 +4,89 @@ import psycopg2
 
 app = FastAPI()
 
-# Connexion à PostgreSQL
+# Configuration de connexion à la base de données
 def get_db_connection():
-    conn = psycopg2.connect(
-        host="localhost",
-        database="gestioncontact",
-        user="monuser",
-        password="kramo"
-    )
-    return conn
+    try:
+        conn = psycopg2.connect(
+            dbname="gestioncontact",
+            user="monuser",
+            password="kramo",
+            host="localhost",
+            port="5432"
+        )
+        return conn
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur de connexion à la base de données: {e}")
 
-# Modèles Pydantic pour les tables
+# Fonction pour créer la base de données et les tables
+def create_database():
+    try:
+        conn = get_db_connection()
+        conn.autocommit = True
+        cursor = conn.cursor()
+        
+        # Liste des requêtes de création de table
+        tables = [
+            """
+            CREATE TABLE IF NOT EXISTS Departement (
+                id SERIAL PRIMARY KEY,
+                nom VARCHAR(100) NOT NULL,
+                localisation VARCHAR(100),
+                description VARCHAR(100),
+                contact VARCHAR(50),
+                est_interne BOOLEAN
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS Service (
+                id SERIAL PRIMARY KEY,
+                nom VARCHAR(100) NOT NULL,
+                description VARCHAR(100),
+                localisation VARCHAR(100),
+                contact VARCHAR(50),
+                departement_id INTEGER REFERENCES Departement(id)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS Personne (
+                id SERIAL PRIMARY KEY,
+                nom VARCHAR(100) NOT NULL,
+                prenom VARCHAR(100) NOT NULL,
+                date_naissance DATE,
+                fonction VARCHAR(50),
+                photo VARCHAR(100)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS TypeContact (
+                id SERIAL PRIMARY KEY,
+                libelle VARCHAR(100) NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS Contact (
+                id SERIAL PRIMARY KEY,
+                valeur VARCHAR(100) NOT NULL,
+                est_public BOOLEAN,
+                personne_id INTEGER REFERENCES Personne(id),
+                type_contact_id INTEGER REFERENCES TypeContact(id),
+                service_id INTEGER REFERENCES Service(id)
+            )
+            """
+        ]
+        
+        for table in tables:
+            cursor.execute(table)
+        
+        print("Toutes les tables ont été créées avec succès.")
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la création des tables: {e}")
+    finally:
+        cursor.close()
+        conn.close()
+
+# Modèles Pydantic
 class Departement(BaseModel):
     nom: str
     localisation: str = None
@@ -44,9 +116,8 @@ class Contact(BaseModel):
     service_id: int
 
 class TypeContact(BaseModel):
+    id: int
     libelle: str
-    description: str
-
 # Routes CRUD pour chaque table
 # ----------------------------- Departement ----------------------------- #
 #CODE POUR AJOUTER UN ELEMENT QUELQCONQUE A LA TABLE DEPARTEMENT
@@ -255,21 +326,22 @@ def get_contact(id: int):
     try:
         # Jointure entre la table contact, personne, type_contact et service
         cursor.execute("""
+                       
             SELECT  
-                contact.id, contact.valeur, contact.est_public, 
-                personne.nom, personne.prenom, personne.date_naissance, personne.fonction, personne.photo, 
-                typecontact.type_nom, typecontact.description, 
-                service.nom, service.description, service.localisation,
-                departement.id as departement_id, departement.nom as departement_nom, 
-                departement.localisation as departement_localisation, 
-                departement.description as departement_description, departement.contact as departement_contact, 
-                departement.est_interne as departement_est_interne
-            FROM contact
-            JOIN personne ON contact.personne_id = personne.id
-            JOIN typecontact ON contact.type_contact_id = typecontact.id
-            JOIN service ON contact.service_id = service.id
-            JOIN departement ON service.departement_id = departement.id
-            WHERE contact.id = %s;
+    Contact.id, Contact.valeur, Contact.est_public, 
+    Personne.nom, Personne.prenom, Personne.date_naissance, Personne.fonction, Personne.photo, 
+    TypeContact.libelle AS type_contact_libelle, TypeContact.description AS type_contact_description, 
+    Service.nom AS service_nom, Service.description AS service_description, Service.localisation AS service_localisation,
+    Departement.id AS departement_id, Departement.nom AS departement_nom, 
+    Departement.localisation AS departement_localisation, 
+    Departement.description AS departement_description, Departement.contact AS departement_contact, 
+    Departement.est_interne AS departement_est_interne
+FROM Contact
+JOIN Personne ON Contact.personne_id = Personne.id
+JOIN TypeContact ON Contact.type_contact_id = TypeContact.id
+JOIN Service ON Contact.service_id = Service.id
+JOIN Departement ON Service.departement_id = Departement.id
+WHERE Contact.id = %s;
            
         
         """, (id,))
@@ -348,21 +420,22 @@ def delete_contact(id: int):
 # ----------------------------- TypeContact ----------------------------- #
 # les routes CRUD pour TypeContact
 # Route pour ajouter un type de contact
-@app.post("/gestioncontact/typecontact")
-def create_type_contact(type_contact: TypeContact):
-    conn = get_db_connection()
+@app.post("/typecontacts/")
+def create_typecontact(typecontact: TypeContactCreate, db=Depends(get_db)):
+    conn = db
     cursor = conn.cursor()
     try:
-        cursor.execute(
-            "INSERT INTO type_contact (type_nom, description) VALUES (%s, %s) RETURNING id;",
-            (type_contact.type_nom, type_contact.description)
-        )
-        type_contact_id = cursor.fetchone()[0]
+        # Correction de la requête SQL pour utiliser `libelle` au lieu de `type_nom`
+        query = """
+        INSERT INTO type_contact (libelle) VALUES (%s) RETURNING id;
+        """
+        cursor.execute(query, (typecontact.libelle,))
+        new_id = cursor.fetchone()[0]
         conn.commit()
-        return {"id": type_contact_id, "message": "Type de contact ajouté avec succès"}
+        return {"id": new_id, "libelle": typecontact.libelle}
     except Exception as e:
         conn.rollback()
-        raise HTTPException(status_code=400, detail=f"Erreur lors de la creation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         cursor.close()
         conn.close()
